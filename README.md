@@ -1,5 +1,7 @@
 # StreamGrabber
 
+![A floating video player with a green play button shedding grey ad rectangles on a dark background](docs/marketing/social-preview-1280x640.jpg)
+
 Paste a live-sport aggregator match link, click Convert, click Stream. mpv opens with the raw HLS feed and none of the page around it. No ads, no popunders, no browser tab.
 
 ![StreamGrabber after a Convert: the stream URL and referer filled in, a verified badge, and the big Stream button](docs/screenshot.png)
