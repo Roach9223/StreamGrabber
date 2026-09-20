@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>StreamGrabber</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d10'/%3E%3Cpath d='M11 8l14 8-14 8z' fill='%233df58c'/%3E%3C/svg%3E">
+<style>
+  @font-face { font-family: 'Space Grotesk'; src: url('fonts/SpaceGrotesk-Medium.ttf') format('truetype'); font-weight: 500; font-display: swap; }
+  @font-face { font-family: 'Space Grotesk'; src: url('fonts/SpaceGrotesk-Bold.ttf') format('truetype'); font-weight: 700; font-display: swap; }
+  @font-face { font-family: 'DM Mono'; src: url('fonts/DMMono-Regular.ttf') format('truetype'); font-weight: 400; font-display: swap; }
+  @font-face { font-family: 'DM Mono'; src: url('fonts/DMMono-Medium.ttf') format('truetype'); font-weight: 500; font-display: swap; }
+
+  :root {
+    --bg: #0b0d10;
+    --bg-2: #101419;
+    --surface: #151a21;
+    --surface-2: #1b212a;
+    --line: #262e39;
+    --line-2: #34404e;
+    --text: #e9edf2;
+    --muted: #94a0b1;
+    --faint: #6a7686;
+    --go: #3df58c;
+    --go-2: #2fd97a;
+    --go-ink: #06110b;
+    --live: #ff4d4d;
+    --warn: #ffc857;
+    --warn-ink: #1a1300;
+    --sans: 'Space Grotesk', 'Segoe UI', system-ui, sans-serif;
+    --mono: 'DM Mono', 'Cascadia Mono', Consolas, monospace;
+    --r: 12px;
+    --dur: 160ms;
+  }
+  @media (prefers-reduced-motion: reduce) { :root { --dur: 0ms; } }
+
+  * { box-sizing: border-box; }
+  html { background: var(--bg); }
+  body {
+    margin: 0; min-height: 100vh; color: var(--text); font: 500 15px/1.45 var(--sans);
+    background:
+      radial-gradient(900px 420px at 50% -120px, rgba(61,245,140,.10), transparent 60%),
+      linear-gradient(180deg, var(--bg-2), var(--bg) 320px);
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible { outline: 2px solid var(--go); outline-offset: 2px; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: .5; }
+  ::selection { background: rgba(61,245,140,.35); }
+
+  .app { max-width: 700px; margin: 0 auto; padding: 28px 22px 40px; display: grid; gap: 18px; }
+
+  header { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; padding: 4px 2px 6px; }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .mark { width: 40px; height: 40px; border-radius: 10px; background: var(--go); display: grid; place-items: center; box-shadow: 0 0 0 1px rgba(61,245,140,.35), 0 8px 24px -10px rgba(61,245,140,.7); }
+  .mark svg { width: 20px; height: 20px; display: block; margin-left: 3px; }
+  h1 { margin: 0; font-size: 22px; font-weight: 700; letter-spacing: -.01em; line-height: 1.1; }
+  .tag { margin: 3px 0 0; color: var(--muted); font-size: 13px; }
+  .live { display: inline-flex; align-items: center; gap: 7px; font: 500 11px/1 var(--mono); letter-spacing: .12em; color: var(--muted); text-transform: uppercase; }
+  .live i { width: 7px; height: 7px; border-radius: 50%; background: var(--live); box-shadow: 0 0 0 0 rgba(255,77,77,.5); animation: pulse 1.8s ease-out infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 7px rgba(255,77,77,0); } 100% { box-shadow: 0 0 0 0 rgba(255,77,77,0); } }
+  @media (prefers-reduced-motion: reduce) { .live i { animation: none; } }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 16px; display: grid; gap: 12px; }
+  .card.result { border-color: var(--line-2); }
+  .card[hidden] { display: none; }
+
+  label, .lbl { display: block; font: 500 11px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; }
+  .row { display: flex; gap: 8px; align-items: stretch; }
+  .row > .field { flex: 1; min-width: 0; }
+  .field {
+    width: 100%; height: 46px; padding: 0 14px; border-radius: 9px; background: var(--bg); border: 1px solid var(--line);
+    font: 400 14px/1 var(--mono); color: var(--text); transition: border-color var(--dur);
+  }
+  .field::placeholder { color: var(--faint); }
+  .field:hover { border-color: var(--line-2); }
+  .field:focus { border-color: var(--go); outline: none; box-shadow: 0 0 0 3px rgba(61,245,140,.15); }
+  .field.bad { border-color: var(--live); }
+
+  .btn {
+    height: 46px; padding: 0 16px; border-radius: 9px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--text);
+    font-weight: 700; white-space: nowrap; transition: background var(--dur), border-color var(--dur), transform var(--dur);
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .btn:hover:not(:disabled) { background: #222a35; border-color: #465262; }
+  .btn:active:not(:disabled) { transform: translateY(1px); }
+  .btn.primary { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .btn.primary:hover:not(:disabled) { background: #fff; border-color: #fff; }
+  .btn.small { height: 34px; padding: 0 12px; font-size: 13px; font-weight: 500; }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+  .btn.ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); border-color: transparent; }
+  .btn.icon { width: 46px; padding: 0; flex: none; }
+  .btn.icon svg { width: 18px; height: 18px; }
+
+  .go {
+    width: 100%; height: 68px; border-radius: 14px; border: 0; background: var(--go); color: var(--go-ink);
+    font-size: 22px; font-weight: 700; letter-spacing: -.01em; display: inline-flex; align-items: center; justify-content: center; gap: 12px;
+    box-shadow: 0 10px 30px -12px rgba(61,245,140,.8), inset 0 1px 0 rgba(255,255,255,.35);
+    transition: transform var(--dur), background var(--dur), box-shadow var(--dur);
+  }
+  .go:hover:not(:disabled) { background: var(--go-2); transform: translateY(-1px); box-shadow: 0 14px 34px -12px rgba(61,245,140,.9), inset 0 1px 0 rgba(255,255,255,.35); }
+  .go:active:not(:disabled) { transform: translateY(1px); }
+  .go:disabled { opacity: .35; box-shadow: none; }
+  .go svg { width: 22px; height: 22px; }
+
+  .status { display: flex; align-items: center; gap: 10px; min-height: 22px; font: 400 13px/1.4 var(--mono); color: var(--muted); }
+  .status.err { color: var(--live); }
+  .status.ok { color: var(--go); }
+  .status.warn { color: var(--warn); }
+  .spin { width: 14px; height: 14px; border: 2px solid var(--line-2); border-top-color: var(--go); border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spin { animation: none; border-top-color: var(--line-2); } }
+  .log { margin: 0; padding: 10px 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; font: 400 12px/1.6 var(--mono); color: var(--faint); max-height: 150px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .log[hidden] { display: none; }
+  .log b { color: var(--muted); font-weight: 400; }
+
+  .result-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .title { font-size: 16px; font-weight: 700; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .badge { font: 500 11px/1 var(--mono); letter-spacing: .08em; text-transform: uppercase; padding: 6px 9px; border-radius: 999px; border: 1px solid; white-space: nowrap; }
+  .badge.ok { color: var(--go); border-color: rgba(61,245,140,.4); background: rgba(61,245,140,.08); }
+  .badge.warn { color: var(--warn); border-color: rgba(255,200,87,.4); background: rgba(255,200,87,.08); }
+
+  .cmd { display: grid; gap: 8px; }
+  .cmd-head { display: flex; align-items: center; justify-content: space-between; }
+  pre.cmdline { margin: 0; padding: 12px 14px; background: var(--bg); border: 1px solid var(--line); border-radius: 9px; font: 400 12.5px/1.6 var(--mono); color: var(--text); white-space: pre-wrap; word-break: break-all; }
+  pre.cmdline.ran { border-color: rgba(61,245,140,.45); }
+
+  footer { display: grid; gap: 12px; }
+  .mpv { display: flex; align-items: center; gap: 10px; font: 400 12.5px/1.4 var(--mono); color: var(--muted); }
+  .mpv .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--go); flex: none; }
+  .mpv.missing .dot { background: var(--live); }
+  .mpv .path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mpv-edit[hidden] { display: none; }
+
+  .recent { display: grid; gap: 6px; }
+  .recent-item { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface); }
+  .recent-item .meta { flex: 1; min-width: 0; display: grid; gap: 2px; }
+  .recent-item .t { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-item .u { font: 400 11px/1.3 var(--mono); color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .foot-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--faint); font-size: 12px; }
+  kbd { font: 400 11px/1 var(--mono); padding: 3px 6px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--muted); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translate(-50%, 8px); opacity: 0; pointer-events: none; padding: 10px 14px; border-radius: 9px; background: var(--text); color: var(--bg); font-weight: 700; font-size: 13px; transition: opacity var(--dur), transform var(--dur); }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<main class="app">
+  <header>
+    <div class="brand">
+      <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3l15 9-15 9z" fill="#06110b"/></svg></div>
+      <div>
+        <h1>StreamGrabber</h1>
+        <p class="tag">Raw HLS out of the aggregator page, straight into mpv.</p>
+      </div>
+    </div>
+    <span class="live"><i aria-hidden="true"></i>Local</span>
+  </header>
+
+  <section class="card" aria-labelledby="in-lbl">
+    <div>
+      <label id="in-lbl" for="url">Match page or embed URL</label>
+      <div class="row">
+        <input id="url" class="field" type="url" placeholder="https://live.example.st/Team-A-vs-Team-B/12345" autocomplete="off" spellcheck="false">
+        <button id="paste" class="btn icon" type="button" title="Paste from clipboard" aria-label="Paste from clipboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+        </button>
+        <button id="convert" class="btn primary" type="button">Convert</button>
+      </div>
+    </div>
+    <div id="status" class="status" role="status" aria-live="polite"></div>
+    <pre id="log" class="log" hidden></pre>
+  </section>
+
+  <section class="card result" id="result" aria-labelledby="res-title">
+    <div class="result-head">
+      <h2 class="title" id="res-title">Stream</h2>
+      <span id="badge" class="badge ok" hidden></span>
+    </div>
+    <div>
+      <label for="m3u8">Stream (m3u8)</label>
+      <div class="row">
+        <input id="m3u8" class="field" type="url" placeholder="Converted stream URL appears here, or paste your own" autocomplete="off" spellcheck="false">
+        <button class="btn icon copy" type="button" data-for="m3u8" title="Copy stream URL" aria-label="Copy stream URL">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+      </div>
+    </div>
+    <div>
+      <label for="referer">Referer</label>
+      <div class="row">
+        <input id="referer" class="field" type="url" placeholder="https://embed-site.example/" autocomplete="off" spellcheck="false">
+        <button class="btn icon copy" type="button" data-for="referer" title="Copy referer" aria-label="Copy referer">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button id="check" class="btn" type="button" title="Fetch the manifest with this referer and report what comes back">Test</button>
+      </div>
+    </div>
+    <div id="check-out" class="status"></div>
+
+    <button id="stream" class="go" type="button" disabled>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3l15 9-15 9z" fill="currentColor"/></svg>
+      Stream
+    </button>
+
+    <div class="cmd">
+      <div class="cmd-head">
+        <span class="lbl" style="margin:0">What Stream runs</span>
+        <button class="btn small ghost copy" type="button" data-for="cmdline">Copy command</button>
+      </div>
+      <pre id="cmdline" class="cmdline"></pre>
+    </div>
+  </section>
+
+  <footer>
+    <div class="card" style="gap:10px">
+      <div class="mpv" id="mpv">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="path" id="mpv-path">Looking for mpv</span>
+        <button id="mpv-change" class="btn small ghost" type="button" style="margin-left:auto">Change</button>
+      </div>
+      <div class="mpv-edit row" id="mpv-edit" hidden>
+        <input id="mpv-input" class="field" type="text" placeholder="C:\Program Files\MPV Player\mpv.exe" spellcheck="false" aria-label="Path to mpv.exe">
+        <button id="mpv-save" class="btn" type="button">Save</button>
+        <button id="mpv-cancel" class="btn ghost" type="button">Cancel</button>
+      </div>
+    </div>
+
+    <div id="recent-wrap" hidden>
+      <span class="lbl">Recent</span>
+      <div class="recent" id="recent"></div>
+    </div>
+
+    <div class="foot-row">
+      <span><kbd>Enter</kbd> Convert &nbsp; <kbd>Ctrl</kbd>+<kbd>Enter</kbd> Stream</span>
+      <button id="quit" class="btn small ghost" type="button">Quit</button>
+    </div>
+  </footer>
+</main>
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const urlIn = $('url'), m3u8In = $('m3u8'), refIn = $('referer');
+  const convertBtn = $('convert'), streamBtn = $('stream'), checkBtn = $('check');
+  const status = $('status'), log = $('log'), badge = $('badge'), title = $('res-title'), cmdline = $('cmdline'), checkOut = $('check-out');
+  let mpv = { found: false, path: '' };
+  let currentTitle = '';
+  let converting = false;
+
+  const api = async (path, body) => {
+    const r = await fetch(path, body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(j.error || r.statusText), j);
+    return j;
+  };
+
+  let toastTimer;
+  const toast = (msg) => { const t = $('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 1400); };
+
+  const setStatus = (msg, kind = '', busy = false) => {
+    status.className = 'status' + (kind ? ' ' + kind : '');
+    status.innerHTML = '';
+    if (busy) { const s = document.createElement('span'); s.className = 'spin'; s.setAttribute('aria-hidden', 'true'); status.appendChild(s); }
+    status.appendChild(document.createTextNode(msg));
+  };
+
+  const psq = (s) => "'" + String(s).replace(/'/g, "''") + "'";
+  const renderCommand = () => {
+    const m = m3u8In.value.trim() || '<m3u8-url>';
+    const r = refIn.value.trim();
+    const parts = ['&', psq(mpv.path || 'mpv.exe'), '--no-ytdl'];
+    if (r) parts.push(psq('--http-header-fields=Referer: ' + r));
+    parts.push(psq(m));
+    cmdline.textContent = parts.join(' ');
+    cmdline.classList.remove('ran');
+    streamBtn.disabled = !/^https?:\/\//i.test(m3u8In.value.trim());
+  };
+
+  const fillResult = (r, { fromHistory = false } = {}) => {
+    m3u8In.value = r.m3u8 || '';
+    refIn.value = r.referer || '';
+    currentTitle = r.title || '';
+    title.textContent = currentTitle || 'Stream';
+    if (fromHistory) { badge.hidden = true; }
+    else {
+      badge.hidden = false;
+      badge.className = 'badge ' + (r.verified ? 'ok' : 'warn');
+      badge.textContent = r.verified ? `verified · ${r.method}` : 'unverified';
+    }
+    checkOut.textContent = '';
+    checkOut.className = 'status';
+    renderCommand();
+  };
+
+  // ---- state
+  const renderMpv = () => {
+    const box = $('mpv');
+    box.classList.toggle('missing', !mpv.found);
+    $('mpv-path').textContent = mpv.found ? `mpv: ${mpv.path}` : 'mpv not found. Install it with winget install mpv, or set the path.';
+    $('mpv-path').title = mpv.path || '';
+    $('mpv-change').textContent = mpv.found ? 'Change' : 'Set path';
+  };
+  const renderRecent = (hist) => {
+    const wrap = $('recent-wrap'), list = $('recent');
+    list.innerHTML = '';
+    wrap.hidden = !hist.length;
+    for (const h of hist) {
+      const item = document.createElement('div');
+      item.className = 'recent-item';
+      const meta = document.createElement('div'); meta.className = 'meta';
+      const t = document.createElement('div'); t.className = 't'; t.textContent = h.title || h.m3u8;
+      const u = document.createElement('div'); u.className = 'u'; u.textContent = `${h.m3u8}  ·  ${h.referer || 'no referer'}`;
+      meta.append(t, u);
+      const load = document.createElement('button'); load.className = 'btn small'; load.type = 'button'; load.textContent = 'Load';
+      load.addEventListener('click', () => { if (h.pageUrl) urlIn.value = h.pageUrl; fillResult(h, { fromHistory: true }); streamBtn.focus(); });
+      const play = document.createElement('button'); play.className = 'btn small primary'; play.type = 'button'; play.textContent = 'Stream';
+      play.addEventListener('click', () => { if (h.pageUrl) urlIn.value = h.pageUrl; fillResult(h, { fromHistory: true }); doStream(); });
+      const x = document.createElement('button'); x.className = 'btn small ghost'; x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', 'Forget this stream');
+      x.addEventListener('click', async () => { const s = await api('/api/forget', { m3u8: h.m3u8 }); renderRecent(s.history); });
+      item.append(meta, load, play, x);
+      list.appendChild(item);
+    }
+  };
+  // fill: true on first load restores the last stream into the fields.
+  // Later refreshes only update the mpv line and the Recent list.
+  const loadState = async ({ fill = false } = {}) => {
+    const s = await api('/api/state');
+    mpv = s.mpv; renderMpv(); renderRecent(s.history);
+    if (!fill) return;
+    if (s.last) { if (s.last.pageUrl) urlIn.value = s.last.pageUrl; fillResult(s.last, { fromHistory: true }); setStatus('Last stream loaded. Convert again for a fresh link, or hit Stream to reuse it.'); }
+    else renderCommand();
+  };
+
+  // ---- convert
+  const doConvert = () => {
+    const u = urlIn.value.trim();
+    if (!/^https?:\/\//i.test(u)) { urlIn.classList.add('bad'); setStatus('Paste the full match page link, starting with http.', 'err'); urlIn.focus(); return; }
+    if (converting) return;
+    converting = true;
+    urlIn.classList.remove('bad');
+    convertBtn.disabled = true; convertBtn.textContent = 'Working';
+    badge.hidden = true;
+    log.hidden = false; log.textContent = '';
+    setStatus('Loading the page in a headless browser', '', true);
+    const t0 = performance.now();
+    const es = new EventSource('/api/resolve?url=' + encodeURIComponent(u));
+    const finish = () => { es.close(); converting = false; convertBtn.disabled = false; convertBtn.textContent = 'Convert'; };
+    es.addEventListener('log', (e) => {
+      const { message } = JSON.parse(e.data);
+      log.textContent += (log.textContent ? '\n' : '') + message;
+      log.scrollTop = log.scrollHeight;
+      setStatus(message.length > 90 ? message.slice(0, 88) + '…' : message, '', true);
+    });
+    es.addEventListener('done', (e) => {
+      const r = JSON.parse(e.data);
+      finish();
+      fillResult(r);
+      const secs = ((performance.now() - t0) / 1000).toFixed(1);
+      if (r.verified) setStatus(`Ready in ${secs}s. Manifest verified with referer ${r.referer || '(none)'}.`, 'ok');
+      else setStatus(`Found a manifest in ${secs}s but it did not verify with that referer. mpv may still play it; use Test to see what the host says.`, 'warn');
+      streamBtn.focus();
+      loadState().catch(() => {});
+    });
+    es.addEventListener('error', (e) => {
+      finish();
+      let msg = 'Lost the connection to the local server.';
+      try { if (e.data) msg = JSON.parse(e.data).message; } catch {}
+      setStatus(msg, 'err');
+    });
+  };
+
+  // ---- stream
+  const doStream = async () => {
+    const m3u8 = m3u8In.value.trim(), referer = refIn.value.trim();
+    if (!/^https?:\/\//i.test(m3u8)) { setStatus('Convert a page first, or paste an m3u8 URL into the Stream field.', 'err'); m3u8In.focus(); return; }
+    streamBtn.disabled = true;
+    try {
+      const r = await api('/api/stream', { m3u8, referer, title: currentTitle });
+      cmdline.textContent = r.command;
+      cmdline.classList.add('ran');
+      setStatus('mpv launched. If nothing plays, check the referer and hit Test.', 'ok');
+      loadState().catch(() => {});
+    } catch (e) {
+      setStatus(e.message, 'err');
+      if (e.code === 'NO_MPV') { $('mpv-edit').hidden = false; $('mpv-input').focus(); }
+    } finally {
+      streamBtn.disabled = false;
+    }
+  };
+
+  // ---- test referer
+  const doCheck = async () => {
+    const m3u8 = m3u8In.value.trim(), referer = refIn.value.trim();
+    if (!/^https?:\/\//i.test(m3u8)) { checkOut.className = 'status err'; checkOut.textContent = 'Nothing to test yet.'; return; }
+    checkBtn.disabled = true; checkOut.className = 'status'; checkOut.textContent = 'Fetching the manifest';
+    try {
+      const r = await api('/api/check', { m3u8, referer });
+      checkOut.className = 'status ' + (r.ok ? 'ok' : 'warn');
+      checkOut.textContent = `${r.status || 'no reply'} · ${r.bytes} bytes · ${r.hint}`;
+    } catch (e) { checkOut.className = 'status err'; checkOut.textContent = e.message; }
+    finally { checkBtn.disabled = false; }
+  };
+
+  // ---- wiring
+  convertBtn.addEventListener('click', doConvert);
+  streamBtn.addEventListener('click', doStream);
+  checkBtn.addEventListener('click', doCheck);
+  urlIn.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.ctrlKey) { e.preventDefault(); doConvert(); } });
+  urlIn.addEventListener('input', () => urlIn.classList.remove('bad'));
+  document.addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); doStream(); } });
+  [m3u8In, refIn].forEach((el) => el.addEventListener('input', renderCommand));
+
+  $('paste').addEventListener('click', async () => {
+    try { const t = (await navigator.clipboard.readText()).trim(); if (t) { urlIn.value = t; urlIn.classList.remove('bad'); doConvert(); } else toast('Clipboard is empty'); }
+    catch { urlIn.focus(); toast('Clipboard blocked. Use Ctrl+V'); }
+  });
+  document.querySelectorAll('.copy').forEach((b) => b.addEventListener('click', async () => {
+    const el = $(b.dataset.for);
+    const text = el.value !== undefined ? el.value : el.textContent;
+    if (!text.trim()) return toast('Nothing to copy');
+    try { await navigator.clipboard.writeText(text); toast('Copied'); } catch { toast('Copy failed'); }
+  }));
+
+  $('mpv-change').addEventListener('click', () => { $('mpv-edit').hidden = false; $('mpv-input').value = mpv.path || ''; $('mpv-input').focus(); });
+  $('mpv-cancel').addEventListener('click', () => { $('mpv-edit').hidden = true; });
+  $('mpv-save').addEventListener('click', async () => {
+    try { const r = await api('/api/mpv', { path: $('mpv-input').value }); mpv = r.mpv; renderMpv(); renderCommand(); $('mpv-edit').hidden = true; toast(mpv.found ? 'mpv path saved' : 'Cleared'); }
+    catch (e) { toast(e.message); }
+  });
+  $('mpv-input').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('mpv-save').click(); });
+
+  $('quit').addEventListener('click', async () => { try { await api('/api/quit', {}); } catch {} document.body.innerHTML = '<p style="padding:40px;font-family:var(--mono);color:var(--muted)">StreamGrabber closed. You can shut this window.</p>'; setTimeout(() => window.close(), 300); });
+
+  // Tells the server this window is open; it quits a few seconds after the
+  // last window goes away. EventSource reconnects on its own after a reload.
+  new EventSource('/api/alive');
+
+  loadState({ fill: true }).catch((e) => setStatus('Could not reach the local server: ' + e.message, 'err'));
+  if (!urlIn.value) urlIn.focus();
+})();
+</script>
+</body>
+</html>
