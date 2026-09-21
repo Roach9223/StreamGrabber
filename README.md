@@ -23,6 +23,8 @@ Windows SmartScreen will warn on first run because the exe isn't code-signed. Cl
 
 Ctrl+Enter streams from anywhere on the page. Test fetches the manifest with the current referer and tells you what came back, which is the first thing to check when mpv opens and closes again.
 
+Before a game the player site usually has nothing up yet: either its event page is down or the stream slot answers 404. The app says which, and offers **Watch for kickoff**. That retries every minute and starts mpv by itself the moment the stream appears, so you can paste the link early and walk away.
+
 The last stream and the seven before it stay in the Recent list, so a game can be restarted without touching the aggregator page again. That helps when the page is down or the ads are worse than usual. Settings live in `%LOCALAPPDATA%\StreamGrabber\config.json`.
 
 Closing the window quits the app. There is no console; if something goes wrong at startup, `%LOCALAPPDATA%\StreamGrabber\streamgrabber.log` has the details, and `StreamGrabber.exe --console` keeps a terminal open.
@@ -47,7 +49,9 @@ Ad hosts are blocked, popunders are closed as they open, and images, fonts and m
 ## When it fails
 
 - **No player iframe was found**: the link is probably the site home or a listing, not a match page. Paste the match page, or the embed page directly.
-- **Loaded but never fetched a manifest**: the stream has not started, or the site changed its player. Try again closer to kick-off.
+- **The player page is down (404)**: the player site takes event pages down outside the game window. Nothing to grab yet. Turn on Watch for kickoff.
+- **Not live yet**: the stream slot was found but the host has nothing there. Same answer: Watch for kickoff.
+- **Loaded but never fetched a manifest**: the site changed its player, or the stream is gone. Convert again; if it keeps happening, open an issue with the log.
 - **Manifest did not verify**: the host wants a different referer. Edit the Referer field and press Test until it reports a complete manifest.
 - **mpv not found**: `winget install mpv`, or set the path in the footer.
 - **No Chromium-based browser found**: install Edge or Chrome, or set `STREAMGRABBER_BROWSER` to the path of any Chromium exe.

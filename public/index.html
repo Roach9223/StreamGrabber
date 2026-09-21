@@ -173,6 +173,10 @@
       </div>
     </div>
     <div id="status" class="status" role="status" aria-live="polite"></div>
+    <div id="watch-row" class="row" hidden style="align-items:center">
+      <button id="watch" class="btn small" type="button">Watch for kickoff</button>
+      <span id="watch-note" class="status" aria-live="polite"></span>
+    </div>
     <pre id="log" class="log" hidden></pre>
   </section>
 
@@ -291,7 +295,8 @@
     else {
       badge.hidden = false;
       badge.className = 'badge ' + (r.verified ? 'ok' : 'warn');
-      badge.textContent = r.verified ? `verified · ${r.method}` : 'unverified';
+      const labels = { 'not-live': 'not live yet', 'wrong-referer': 'needs another referer', 'unverified': 'unverified' };
+      badge.textContent = r.verified ? `verified · ${r.method}` : (labels[r.status] || 'unverified');
     }
     checkOut.textContent = '';
     checkOut.className = 'status';
@@ -338,10 +343,11 @@
   };
 
   // ---- convert
-  const doConvert = () => {
+  // Resolves to { ok: true, r } or { ok: false, code, message }. Never rejects.
+  const doConvert = () => new Promise((done) => {
     const u = urlIn.value.trim();
-    if (!/^https?:\/\//i.test(u)) { urlIn.classList.add('bad'); setStatus('Paste the full match page link, starting with http.', 'err'); urlIn.focus(); return; }
-    if (converting) return;
+    if (!/^https?:\/\//i.test(u)) { urlIn.classList.add('bad'); setStatus('Paste the full match page link, starting with http.', 'err'); urlIn.focus(); return done({ ok: false, code: 'BAD_URL' }); }
+    if (converting) return done({ ok: false, code: 'BUSY' });
     converting = true;
     urlIn.classList.remove('bad');
     convertBtn.disabled = true; convertBtn.textContent = 'Working';
@@ -363,17 +369,48 @@
       fillResult(r);
       const secs = ((performance.now() - t0) / 1000).toFixed(1);
       if (r.verified) setStatus(`Ready in ${secs}s. Manifest verified with referer ${r.referer || '(none)'}.`, 'ok');
-      else setStatus(`Found a manifest in ${secs}s but it did not verify with that referer. mpv may still play it; use Test to see what the host says.`, 'warn');
+      else if (r.status === 'not-live') setStatus(`Found the stream slot in ${secs}s, but the host has nothing there yet. The game is probably not live. Turn on Watch for kickoff and the app streams the moment it goes up.`, 'warn');
+      else setStatus(`Found a stream URL in ${secs}s. ${r.reason || 'It did not verify with that referer; mpv may still play it. Press Test to see what the host says.'}`, 'warn');
+      offerWatch(r.status === 'not-live');
       streamBtn.focus();
       loadState().catch(() => {});
+      done({ ok: true, r });
     });
     es.addEventListener('error', (e) => {
       finish();
-      let msg = 'Lost the connection to the local server.';
-      try { if (e.data) msg = JSON.parse(e.data).message; } catch {}
+      let msg = 'Lost the connection to the local server.', code = 'CONN';
+      try { if (e.data) { const d = JSON.parse(e.data); msg = d.message || msg; code = d.code || code; } } catch {}
       setStatus(msg, 'err');
+      offerWatch(code === 'EMBED_DOWN' || code === 'NO_MANIFEST');
+      done({ ok: false, code, message: msg });
     });
+  });
+
+  // ---- watch for kickoff: retry every minute, stream when it goes live
+  const WATCH_EVERY = 60;
+  let watchTimer = null, watchLeft = 0;
+  const watchRow = $('watch-row'), watchBtn = $('watch'), watchNote = $('watch-note');
+  const offerWatch = (show) => { if (!watchTimer) { watchRow.hidden = !show; watchNote.textContent = ''; } };
+  const stopWatch = () => { clearInterval(watchTimer); watchTimer = null; watchBtn.textContent = 'Watch for kickoff'; watchNote.textContent = ''; };
+  const tickWatch = async () => {
+    if (converting) return;
+    watchLeft--;
+    if (watchLeft > 0) { watchNote.textContent = `Trying again in ${watchLeft}s`; return; }
+    watchNote.textContent = 'Checking now';
+    const res = await doConvert();
+    if (!watchTimer) return;
+    if (res.ok && res.r.verified) { stopWatch(); watchRow.hidden = true; toast('Live. Starting mpv'); doStream(); return; }
+    watchLeft = WATCH_EVERY;
+    watchRow.hidden = false;
+    watchNote.textContent = `Not up yet. Trying again in ${watchLeft}s`;
   };
+  const startWatch = () => {
+    watchLeft = WATCH_EVERY;
+    watchBtn.textContent = 'Stop watching';
+    watchNote.textContent = `Trying again in ${watchLeft}s`;
+    watchTimer = setInterval(tickWatch, 1000);
+  };
+  watchBtn.addEventListener('click', () => (watchTimer ? stopWatch() : startWatch()));
 
   // ---- stream
   const doStream = async () => {

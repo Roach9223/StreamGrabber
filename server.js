@@ -17,6 +17,10 @@ if (process.pkg) {
   };
 }
 
+// A stray async error anywhere (a page script misbehaving inside the
+// resolver's sandbox, say) must not take the whole app down.
+process.on('unhandledRejection', (e) => { console.error('ignored async error:', (e && e.message) || e); });
+
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -215,7 +219,7 @@ async function handle(req, res) {
     else if (withRef.status === 0) hint = `Could not reach the stream host: ${withRef.error || 'network error'}.`;
     else if (withRef.text.trim().startsWith('#EXTM3U')) hint = 'Got a truncated manifest. This host wants a different Referer, usually the embed site the player came from.';
     else if (withRef.status === 403) hint = 'The host refused the request (403). Wrong Referer, or the stream has moved.';
-    else if (withRef.status === 404) hint = 'Stream not found (404). The channel slot may have changed. Convert the match page again.';
+    else if (withRef.status === 404) hint = 'The stream host has nothing at this slot right now (404). Usually the game is not live yet; it tends to appear a few minutes before kickoff. If the game is on, Convert the match page again for a fresh slot.';
     else hint = `Unexpected reply (${withRef.status}). The body did not look like an HLS manifest.`;
     return json(res, 200, { ok: withRef.complete, status: withRef.status, bytes: withRef.text.length, hint, head: withRef.text.slice(0, 600) });
   }

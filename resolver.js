@@ -22,7 +22,7 @@ const vm = require('node:vm');
 const { findBrowser, NO_BROWSER_MSG } = require('./browsers');
 
 const NAV_TIMEOUT = 30000;   // ms to wait for the page's first response
-const CAPTURE_WAIT = 7000;   // ms to watch the network before poking
+const CAPTURE_WAIT = 5000;   // ms to watch the network before decoding scripts
 const POKE_WAIT = 6000;      // ms to watch after poking the player
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36';
 
@@ -153,9 +153,19 @@ function vmExtract(scriptSource) {
     (isPlayer ? player : other).push(u);
   };
 
+  // Anything the page script asks of an element that we did not stub gets a
+  // no-op function back, so a call like el.style.setProperty() cannot throw.
+  const noop = () => {};
+  const forgiving = (obj) => new Proxy(obj, {
+    get(t, k) {
+      if (k in t) return t[k];
+      if (typeof k !== 'string' || k === 'then' || k === 'toJSON') return undefined;
+      return noop;
+    },
+  });
   const makeEl = () => {
     const el = {
-      style: {}, dataset: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+      style: forgiving({}), dataset: {}, classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
       children: [], childNodes: [], attributes: {},
       addEventListener() {}, removeEventListener() {}, appendChild(c) { return c; }, removeChild() {}, insertBefore() {},
       setAttribute(k, v) { el.attributes[k] = v; if (k === 'src') record(String(v)); }, getAttribute(k) { return el.attributes[k] ?? null; },
@@ -165,7 +175,7 @@ function vmExtract(scriptSource) {
       innerHTML: '', textContent: '', parentNode: null, parentElement: null,
     };
     Object.defineProperty(el, 'src', { set(v) { record(String(v), true); }, get() { return ''; } });
-    return el;
+    return forgiving(el);
   };
 
   class Hls {
@@ -206,19 +216,24 @@ function vmExtract(scriptSource) {
     navigator: { userAgent: UA, language: 'en-US', platform: 'Win32', plugins: [] },
     location: { href: '', hostname: '', origin: '', protocol: 'https:', search: '', hash: '' },
     screen: { width: 1920, height: 1080 },
+    crypto: { getRandomValues: (a) => a, randomUUID: () => '00000000-0000-4000-8000-000000000000', subtle: {} },
+    performance: { now: () => 0, mark() {}, measure() {} },
     localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     sessionStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
     fetch: (u) => { record(String(u)); return new Promise(() => {}); },
     XMLHttpRequest: function () { return { open: (_, u) => record(String(u)), send() {}, setRequestHeader() {}, addEventListener() {} }; },
     Hls, jwplayer: () => jwInstance, Clappr: { Player: clapprPlayer }, videojs,
-    Promise, JSON, Math, Date, String, Number, Array, Object, RegExp, Error, TextDecoder, TextEncoder, Uint8Array, encodeURIComponent, decodeURIComponent, parseInt, parseFloat, isNaN, escape, unescape,
+    TextDecoder, TextEncoder, escape, unescape,
     addEventListener() {}, removeEventListener() {}, postMessage() {}, alert() {}, open() {}, MutationObserver: function () { return { observe() {}, disconnect() {} }; },
     Image: function () { return makeEl(); }, Audio: function () { return makeEl(); },
     dispatchEvent() {}, matchMedia: () => ({ matches: false, addListener() {}, addEventListener() {} }),
     devicePixelRatio: 1, innerWidth: 1280, innerHeight: 720,
   };
   sandbox.window = sandbox; sandbox.self = sandbox; sandbox.globalThis = sandbox; sandbox.top = sandbox; sandbox.parent = sandbox;
-  const ctx = vm.createContext(sandbox);
+  // The context keeps its own Promise and microtask queue, drained inside
+  // runInContext, so a rejection in a page script's .then() lands in this
+  // try/catch instead of killing the process as an unhandled rejection.
+  const ctx = vm.createContext(sandbox, { microtaskMode: 'afterEvaluate' });
   try { vm.runInContext(scriptSource, ctx, { timeout: 1500 }); } catch { /* scripts often reference APIs we don't stub; that's fine */ }
   // Player captures win outright. Loose captures only count if they look like a manifest.
   return [...new Set([...player, ...other.filter((u) => /m3u8|hls|playlist|manifest/i.test(u))])];
@@ -272,8 +287,15 @@ async function findPlayerFrames(page) {
   try {
     items = await page.$$eval('iframe', (els) => els.map((e) => { const r = e.getBoundingClientRect(); return { src: e.src || e.getAttribute('data-src') || '', w: r.width, h: r.height }; }));
   } catch {}
+  items = items.filter((i) => i.src && !i.src.startsWith('about:'));
+  if (!items.length) {
+    // The DOM query can miss iframes that are still loading or were built
+    // by script. The frame tree knows about them regardless.
+    items = page.frames()
+      .filter((f) => f !== page.mainFrame() && /^https?:/.test(f.url()))
+      .map((f) => ({ src: f.url(), w: 1, h: 1 }));
+  }
   return items
-    .filter((i) => i.src && !i.src.startsWith('about:'))
     .sort((a, b) => (b.w * b.h) - (a.w * a.h))
     .sort((a, b) => (AD_HOST_RE.test(a.src) ? 1 : 0) - (AD_HOST_RE.test(b.src) ? 1 : 0));
 }
@@ -311,8 +333,11 @@ async function resolve(inputUrl, onLog) {
   });
 
   const page = await context.newPage();
-  // Popups (popunders) get closed the moment they appear.
-  context.on('page', (p) => { if (p !== page) p.close().catch(() => {}); });
+  // Popups (popunders) get closed the moment they appear. Pages we open on
+  // purpose (the direct embed load) register themselves in ownPages.
+  const ownPages = new Set([page]);
+  context.ownPages = ownPages;
+  context.on('page', (p) => { if (!ownPages.has(p)) p.close().catch(() => {}); });
 
   const noteCandidate = (url, referer, frameUrl, extra = {}) => {
     if (seen.has(url)) return;
@@ -321,9 +346,18 @@ async function resolve(inputUrl, onLog) {
     say(`manifest candidate: ${url}`);
   };
 
+  // Child-frame documents that came back as errors: the player site takes
+  // its event pages down outside the game window, and then the aggregator's
+  // iframe points at a 404.
+  const frameErrors = new Map();
+
   context.on('response', async (res) => {
     const req = res.request();
     const url = res.url();
+    if (req.resourceType() === 'document' && res.status() >= 400) {
+      const fr = req.frame();
+      if (fr && fr !== page.mainFrame()) frameErrors.set(url, res.status());
+    }
     const ct = (res.headers()['content-type'] || '').toLowerCase();
     const byType = ct.includes('mpegurl') || ct.includes('x-mpegurl');
     const byUrl = looksLikeManifestUrl(url);
@@ -377,6 +411,9 @@ async function resolve(inputUrl, onLog) {
       return candidates.length > 0;
     };
 
+    // Let the DOM settle briefly so the iframe scan sees the player.
+    await page.waitForLoadState('domcontentloaded', { timeout: 6000 }).catch(() => {});
+
     // Step 1: just watch.
     await waitForCandidate(CAPTURE_WAIT);
 
@@ -392,17 +429,7 @@ async function resolve(inputUrl, onLog) {
       say('no player iframe on this page, treating it as the embed itself');
     }
 
-    // Step 2: poke and watch again.
-    if (!candidates.some((c) => c.complete || c.hasBody)) {
-      say('no manifest yet, poking the player');
-      await pokePlayer(page, say);
-      await waitForCandidate(POKE_WAIT);
-    }
-
-    // Step 3: script fallback.
-    if (!candidates.length) {
-      say('no manifest on the wire, decoding inline scripts');
-      method = 'script';
+    const decodeScripts = async () => {
       const frameScripts = await collectFrameScripts(page);
       // Prefer the player frame's scripts, then everything else.
       frameScripts.sort((a, b) => (a.frameUrl === embedUrl ? -1 : 0) - (b.frameUrl === embedUrl ? -1 : 0));
@@ -411,8 +438,26 @@ async function resolve(inputUrl, onLog) {
         for (const s of scripts) for (const u of vmExtract(s)) urls.add(u);
         for (const u of decodeFromScripts(scripts)) urls.add(u);
         for (const u of urls) noteCandidate(u, originOf(frameUrl) ? originOf(frameUrl) + '/' : '', frameUrl, { hasBody: false, complete: false, decoded: true });
-        if (urls.size) break;
+        if (urls.size) return true;
       }
+      return false;
+    };
+
+    // Step 2: decode inline scripts. No side effects, so it runs before any
+    // clicking: a click on the player usually sends the iframe off to an ad.
+    // This also finds the stream slot when the game is not live yet and the
+    // player's own request came back 404.
+    if (!candidates.length) {
+      say('no manifest on the wire yet, decoding inline scripts');
+      if (await decodeScripts()) method = 'script';
+    }
+
+    // Step 3: poke and watch again, then decode once more.
+    if (!candidates.length) {
+      say('nothing decoded, poking the player');
+      await pokePlayer(page, say);
+      await waitForCandidate(POKE_WAIT);
+      if (!candidates.length && await decodeScripts()) method = 'script';
     }
 
     // Some player frames open the real player in a nested iframe that only
@@ -424,9 +469,14 @@ async function resolve(inputUrl, onLog) {
     }
 
     if (!candidates.length) {
+      const dead = playerFrame && ([...frameErrors.entries()].find(([u]) => u === playerFrame.src || u.startsWith(playerFrame.src)) || null);
+      if (dead) {
+        const host = originOf(playerFrame.src) ? new URL(playerFrame.src).host : 'the player site';
+        throw Object.assign(new Error(`The match page points at a player on ${host}, but that page is down right now (${host} answered ${dead[1]}). The player site only puts the game up around kickoff, so there is nothing to grab yet. Try again close to game time, or turn on Watch for kickoff and the app will keep trying.`), { code: 'EMBED_DOWN', retryable: true, embedUrl: playerFrame.src });
+      }
       const hint = playerFrame
-        ? `The player iframe (${embedUrl}) loaded but never fetched an HLS manifest and its scripts did not decode to one. The site may have changed its obfuscation, or the stream is not live yet.`
-        : 'No player iframe was found on that page and no HLS manifest was requested. Check the link is the match page (not the site home), or paste the embed URL directly.';
+        ? `The player iframe (${embedUrl}) loaded but never fetched a playable HLS manifest, and its scripts did not decode to a stream URL. Most often that means the site has not put the stream up yet: try again a few minutes before kickoff. If the game is already on, the site may have changed its player.`
+        : 'No player iframe was found on that page and no HLS manifest was requested. Check the link is the match page (not the site home or a listing), or paste the embed URL directly.';
       throw Object.assign(new Error(hint), { code: playerFrame ? 'NO_MANIFEST' : 'NO_IFRAME' });
     }
 
@@ -459,14 +509,30 @@ async function resolve(inputUrl, onLog) {
       if (probe.complete) { chosen = r; break; }
       say(`referer ${r} -> ${probe.status || probe.error || 'no body'}${probe.text ? ` (${probe.text.length} bytes)` : ''}`);
     }
+    // status: 'live' (manifest verified), 'not-live' (host has nothing at
+    // that slot yet), 'wrong-referer' (truncated manifest), 'unverified'.
     let verified = true;
+    let status = 'live';
+    let reason = '';
     if (!chosen) {
       const bare = await fetchManifest(best.url, '');
       if (bare.complete) { chosen = ''; say('manifest serves without any referer'); }
       else {
         verified = false;
         chosen = normalised[0] || '';
-        say(`warning: manifest did not verify (${lastProbe && (lastProbe.status || lastProbe.error)}); mpv may still play it, or it may need a different referer`);
+        const st = lastProbe ? lastProbe.status : 0;
+        const truncated = lastProbe && lastProbe.text.trim().startsWith('#EXTM3U');
+        if (st === 404) {
+          status = 'not-live';
+          reason = 'The stream host has nothing at this slot yet (404). That usually means the game is not live; the slot tends to go up a few minutes before kickoff.';
+        } else if (truncated) {
+          status = 'wrong-referer';
+          reason = 'The host answered with a truncated manifest, so it wants a different Referer. Edit the Referer field and press Test.';
+        } else {
+          status = 'unverified';
+          reason = `The manifest did not verify (${st || (lastProbe && lastProbe.error) || 'no reply'}). mpv may still play it; press Test to see what the host says.`;
+        }
+        say(`warning: ${reason}`);
       }
     }
 
@@ -477,6 +543,8 @@ async function resolve(inputUrl, onLog) {
       pageUrl: target,
       method,
       verified,
+      status,
+      reason,
       title: title.replace(/\s+/g, ' ').trim(),
       elapsedMs: Date.now() - t0,
       candidates: candidates.map((c) => ({ url: c.url, referer: c.referer, complete: !!c.complete })),
@@ -490,7 +558,10 @@ async function resolve(inputUrl, onLog) {
 // Load an embed URL in its own page (used when the aggregator wraps the
 // player in a frame that refuses to play while embedded).
 async function resolveEmbedDirect(context, url, say) {
-  const page = await context.newPage();
+  const pagePromise = context.newPage();
+  // Register before the 'page' event can fire, or the popup guard closes it.
+  const page = await pagePromise;
+  if (context.ownPages) context.ownPages.add(page);
   let found = null;
   const onResp = async (res) => {
     if (found) return;
