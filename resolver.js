@@ -29,6 +29,9 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 // Resource types that never carry a manifest. Skipping them makes the page
 // load much faster and starves most of the ad scripts.
 const SKIP_TYPES = new Set(['image', 'font', 'media', 'stylesheet']);
+// Iframes that sit on match pages but never carry the stream: chat and
+// social widgets. They must not win the "player iframe" pick.
+const NOT_PLAYER_RE = /youtube\.com\/live_chat|youtube\.com\/embed|twitter\.com|x\.com\/i\/|facebook\.com\/plugins|disqus\.com|discord\.com\/widget|google\.com\/recaptcha|challenges\.cloudflare\.com|telegram\.org/i;
 const AD_HOST_RE = /(doubleclick|googlesyndication|adsystem|adnxs|popads|propellerads|exoclick|juicyads|trafficjunky|adsterra|hilltopads|onclick|clickadu|a-ads|mgid|taboola|outbrain|revcontent|zeropark|richads|adcash|pushground)\./i;
 
 let browserPromise = null;
@@ -241,13 +244,19 @@ function vmExtract(scriptSource) {
 
 // ---------------------------------------------------------------------------
 
-async function collectFrameScripts(page) {
+async function collectFrameScripts(page, log = () => {}) {
   const out = [];
   for (const frame of page.frames()) {
     let scripts = [];
     try {
       scripts = await frame.evaluate(() => Array.from(document.scripts).filter((s) => !s.src && s.textContent.trim().length > 20).map((s) => s.textContent));
-    } catch { continue; }
+    } catch (e) {
+      // A frame that navigated away or got detached is normal. Anything
+      // else means page scripting itself is broken, which is worth seeing.
+      const msg = String(e && e.message || e).split('\n')[0];
+      if (!/detached|navigat|destroyed|closed/i.test(msg)) log(`could not read scripts from ${frame.url().slice(0, 60)}: ${msg}`);
+      continue;
+    }
     out.push({ frameUrl: frame.url(), scripts });
   }
   return out;
@@ -287,12 +296,12 @@ async function findPlayerFrames(page) {
   try {
     items = await page.$$eval('iframe', (els) => els.map((e) => { const r = e.getBoundingClientRect(); return { src: e.src || e.getAttribute('data-src') || '', w: r.width, h: r.height }; }));
   } catch {}
-  items = items.filter((i) => i.src && !i.src.startsWith('about:'));
+  items = items.filter((i) => i.src && !i.src.startsWith('about:') && !NOT_PLAYER_RE.test(i.src));
   if (!items.length) {
     // The DOM query can miss iframes that are still loading or were built
     // by script. The frame tree knows about them regardless.
     items = page.frames()
-      .filter((f) => f !== page.mainFrame() && /^https?:/.test(f.url()))
+      .filter((f) => f !== page.mainFrame() && /^https?:/.test(f.url()) && !NOT_PLAYER_RE.test(f.url()))
       .map((f) => ({ src: f.url(), w: 1, h: 1 }));
   }
   return items
@@ -312,6 +321,11 @@ async function resolve(inputUrl, onLog) {
 
   let target;
   try { target = new URL(inputUrl.trim()).href; } catch { throw Object.assign(new Error('That does not look like a URL. Paste the full match page link, starting with http.'), { code: 'BAD_URL' }); }
+
+  // Playwright sends page.evaluate callbacks as their source text. A build
+  // that strips it (pkg bytecode) can only catch streams that appear on the
+  // wire by themselves, so say so up front instead of failing quietly later.
+  if (/\[native code\]/.test(String(() => 0))) say('warning: this build lost its function source, so script decoding and player poking will not work. Rebuild with --no-bytecode.');
 
   const browser = await getBrowser();
   const context = await browser.newContext({
@@ -430,7 +444,7 @@ async function resolve(inputUrl, onLog) {
     }
 
     const decodeScripts = async () => {
-      const frameScripts = await collectFrameScripts(page);
+      const frameScripts = await collectFrameScripts(page, say);
       // Prefer the player frame's scripts, then everything else.
       frameScripts.sort((a, b) => (a.frameUrl === embedUrl ? -1 : 0) - (b.frameUrl === embedUrl ? -1 : 0));
       for (const { frameUrl, scripts } of frameScripts) {
@@ -582,7 +596,7 @@ async function resolveEmbedDirect(context, url, say) {
       for (let i = 0; i < 20 && !found; i++) await page.waitForTimeout(250);
     }
     if (!found) {
-      const scripts = (await collectFrameScripts(page)).flatMap((f) => f.scripts);
+      const scripts = (await collectFrameScripts(page, say)).flatMap((f) => f.scripts);
       const urls = new Set();
       for (const s of scripts) for (const u of vmExtract(s)) urls.add(u);
       for (const u of decodeFromScripts(scripts)) urls.add(u);

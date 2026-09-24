@@ -22,7 +22,13 @@ const fetchVersion = require(path.join(ROOT, 'node_modules', '@yao-pkg', 'pkg-fe
 const cacheDir = process.env.PKG_CACHE_PATH || path.join(os.homedir(), '.pkg-cache', 'v' + fetchVersion.split('.').slice(0, 2).join('.'));
 const stamped = path.join(ROOT, 'build', 'node-base-stamped.exe');
 
-const runPkg = (env = {}) => execFileSync(process.execPath, [pkgCli, '.', '--output', out, '--compress', 'GZip'], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...env } });
+// No bytecode: pkg would strip the JS source, and then Function.prototype
+// .toString() returns "[native code]". Playwright ships every page.evaluate
+// callback to the browser as String(fn), so a bytecode build silently
+// breaks script decoding, iframe scanning and player poking. Only streams
+// that show up on the wire by themselves would still resolve.
+const PKG_FLAGS = ['--no-bytecode', '--public', '--public-packages', '*'];
+const runPkg = (env = {}) => execFileSync(process.execPath, [pkgCli, '.', '--output', out, '--compress', 'GZip', ...PKG_FLAGS], { cwd: ROOT, stdio: 'inherit', env: { ...process.env, ...env } });
 const findBase = () => (fs.existsSync(cacheDir) ? fs.readdirSync(cacheDir).find((f) => /^fetched-v\d+.*win-x64$/.test(f)) : null);
 
 (async () => {
